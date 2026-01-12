@@ -32,6 +32,12 @@ func ExecuteOrganization(albums []*Album, duplicates []*DuplicateGroup, config *
 		for _, file := range album.Files {
 			destPath := filepath.Join(album.Destination, filepath.Base(file.Path))
 
+			// Skip if already at destination (no need to move)
+			if file.Path == destPath {
+				processed++
+				continue
+			}
+
 			// Handle filename conflicts
 			destPath = ensureUniqueFilename(destPath)
 

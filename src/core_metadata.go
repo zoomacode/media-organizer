@@ -35,10 +35,11 @@ func extractPhotoMetadata(mf *MediaFile) {
 
 	x, err := exif.Decode(f)
 	if err != nil {
-		return // No EXIF data
+		// No EXIF data or decode failed - will use file time fallback
+		return
 	}
 
-	// Extract date
+	// Extract date - try DateTime first (works for most cameras)
 	if tm, err := x.DateTime(); err == nil {
 		mf.DateTaken = &tm
 	}

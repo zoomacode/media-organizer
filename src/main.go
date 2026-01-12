@@ -18,26 +18,64 @@ func main() {
 		defaultWorkers = 1
 	}
 
-	// Parse command line flags
-	config := &Config{
-		ScanPath:        "/Volumes/TimeMachine",
-		LibraryBase:     "/Volumes/TimeMachine/MediaLibrary",
-		DuplicatesTrash: "/Volumes/TimeMachine/.duplicates-trash",
-		OllamaModel:     "gemma3:1b",
-		DryRun:          true,
-		Workers:         defaultWorkers,
-	}
-
-	flag.StringVar(&config.ScanPath, "path", config.ScanPath, "Path to scan for media files")
-	flag.StringVar(&config.LibraryBase, "library", config.LibraryBase, "Base path for organized library")
-	flag.BoolVar(&config.DryRun, "dry-run", config.DryRun, "Dry run mode (no actual changes)")
-	flag.IntVar(&config.FileLimit, "limit", 0, "Limit number of files to process (0 = no limit)")
-	flag.IntVar(&config.Workers, "workers", config.Workers, "Number of parallel workers")
-	flag.BoolVar(&config.PruneCache, "prune-cache", false, "Prune deleted files from cache (auto if no --limit)")
-	noTUI := flag.Bool("no-tui", false, "Disable TUI, use simple CLI output")
-	execute := flag.Bool("execute", false, "Actually perform operations (disables dry-run)")
+	// Define all flags
+	var (
+		reconfigure = flag.Bool("reconfigure", false, "Re-run setup wizard to change configuration")
+		scanPath    = flag.String("path", "", "Path to scan for media files (overrides config)")
+		libraryBase = flag.String("library", "", "Base path for organized library (overrides config)")
+		dryRun      = flag.Bool("dry-run", true, "Dry run mode (no actual changes)")
+		fileLimit   = flag.Int("limit", 0, "Limit number of files to process (0 = no limit)")
+		workers     = flag.Int("workers", 0, "Number of parallel workers (overrides config)")
+		pruneCache  = flag.Bool("prune-cache", false, "Prune deleted files from cache (auto if no --limit)")
+		noTUI       = flag.Bool("no-tui", false, "Disable TUI, use simple CLI output")
+		execute     = flag.Bool("execute", false, "Actually perform operations (disables dry-run)")
+	)
 
 	flag.Parse()
+
+	// Load or create configuration
+	var configFile *ConfigFile
+	var err error
+
+	if *reconfigure || !configExists() {
+		// Run setup wizard
+		configFile, err = runSetupWizard()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Setup error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Load existing config
+		configFile, err = loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config from %s: %v\n", getConfigPath(), err)
+			fmt.Println("Run with --reconfigure to set up again")
+			os.Exit(1)
+		}
+	}
+
+	// Create Config from file, with command-line overrides
+	config := &Config{
+		ScanPath:        configFile.ScanPath,
+		LibraryBase:     configFile.LibraryBase,
+		DuplicatesTrash: configFile.DuplicatesTrash,
+		OllamaModel:     configFile.OllamaModel,
+		DryRun:          *dryRun,
+		Workers:         configFile.Workers,
+		FileLimit:       *fileLimit,
+		PruneCache:      *pruneCache,
+	}
+
+	// Command-line flags override config file
+	if *scanPath != "" {
+		config.ScanPath = *scanPath
+	}
+	if *libraryBase != "" {
+		config.LibraryBase = *libraryBase
+	}
+	if *workers > 0 {
+		config.Workers = *workers
+	}
 
 	if *execute {
 		config.DryRun = false
@@ -114,6 +152,10 @@ func runCLI(config *Config) {
 	fmt.Printf("  Photos: %d\n", countByType(files, TypePhoto))
 	fmt.Printf("  Videos: %d\n", countByType(files, TypeVideo))
 	fmt.Printf("  Music:  %d\n", countByType(files, TypeMusic))
+	newCount := countNewFiles(files)
+	if cache != nil {
+		fmt.Printf("  New files: %d (rest already in library)\n", newCount)
+	}
 	fmt.Println()
 
 	// Extract metadata
@@ -196,8 +238,19 @@ func runCLI(config *Config) {
 	fmt.Println()
 
 	// Show summary
+	if len(albums) == 0 {
+		fmt.Println("No new files to organize! All files are already in the library.")
+		return
+	}
+
+	totalFilesToMove := 0
+	for _, album := range albums {
+		totalFilesToMove += len(album.Files)
+	}
+
 	fmt.Println("Organization Plan:")
 	fmt.Println("==================")
+	fmt.Printf("Found %d new/moved files to organize into %d albums\n\n", totalFilesToMove, len(albums))
 	for i, album := range albums {
 		if i >= 10 {
 			fmt.Printf("... and %d more albums\n", len(albums)-10)
@@ -252,6 +305,16 @@ func countByType(files []*MediaFile, mediaType MediaType) int {
 	count := 0
 	for _, f := range files {
 		if f.Type == mediaType {
+			count++
+		}
+	}
+	return count
+}
+
+func countNewFiles(files []*MediaFile) int {
+	count := 0
+	for _, f := range files {
+		if f.IsNew {
 			count++
 		}
 	}

@@ -8,14 +8,20 @@ Intelligent media library organizer that uses AI (Ollama) to suggest album names
 # Build the tool
 go build -o media-organizer ./src
 
-# Test on 100 files (safe - you can accept/reject the plan)
-./media-organizer --path "/path/to/your/photos" --limit 100
+# First run - setup wizard will guide you through configuration
+./media-organizer
 
-# Review the plan in TUI, press 'y' to accept or 'n' to reject
-# Files will be organized into MediaLibrary/ by date and album
+# Follow the prompts to set:
+#   - Where your media files are located
+#   - Where the organized library should go
+#   - Where duplicates should be moved
+#   - Ollama model preference
+#   - Number of worker threads
 ```
 
 **That's it!** The tool is safe by default - you always review before it moves files.
+
+Your configuration is saved to `~/.media-organizer.yaml` and loaded automatically on subsequent runs. Use `--reconfigure` to change settings anytime.
 
 ## Features
 
@@ -199,12 +205,38 @@ Shows:
 ./media-organizer --path "/Volumes/TimeMachine" --execute
 ```
 
+## Configuration
+
+On first run, an interactive setup wizard helps you configure:
+- **Scan Path**: Root directory containing your media files
+- **Library Base**: Where the organized library will be created
+- **Duplicates Trash**: Where duplicate files are moved for review
+- **Ollama Model**: Which model to use for smart album naming
+- **Workers**: Number of parallel processing threads
+
+Configuration is saved to `~/.media-organizer.yaml`:
+
+```yaml
+scan_path: /Volumes/TimeMachine
+library_base: /Volumes/TimeMachine/MediaLibrary
+duplicates_trash: /Volumes/TimeMachine/.duplicates-trash
+ollama_model: gemma2:2b
+workers: 4
+```
+
+**Reconfigure**: Run `./media-organizer --reconfigure` to change settings anytime.
+
+**Manual edit**: You can also edit `~/.media-organizer.yaml` directly.
+
 ## Command-Line Options
 
-- `--path` - Path to scan for media files (default: `/Volumes/TimeMachine`)
-- `--library` - Base path for organized library (default: `/Volumes/TimeMachine/MediaLibrary`)
+Command-line flags **override** config file settings:
+
+- `--reconfigure` - Re-run setup wizard to change configuration
+- `--path` - Path to scan for media files (overrides config)
+- `--library` - Base path for organized library (overrides config)
+- `--workers` - Number of parallel workers (overrides config)
 - `--limit` - Limit number of files to process (0 = no limit, useful for testing)
-- `--workers` - Number of parallel workers (default: half of CPU cores, keeps system responsive)
 - `--dry-run` - Preview mode, no actual changes (default: true; in TUI you can still accept/reject)
 - `--execute` - Actually perform the organization (in CLI mode; in TUI you can still reject)
 - `--prune-cache` - Force pruning of deleted files from cache (auto when no --limit)

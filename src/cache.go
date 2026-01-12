@@ -15,6 +15,13 @@ import (
 type cacheWriteRequest struct {
 	mf      *MediaFile
 	modTime time.Time
+	oldPath string // For path updates (empty if new file)
+
+	// For album suggestion cache writes
+	isAlbumSuggestion bool
+	folderPath        string
+	sampleFiles       []string
+	suggestion        string
 }
 
 type Cache struct {
@@ -58,8 +65,8 @@ func OpenCache(libraryBase string) (*Cache, error) {
 		return nil, fmt.Errorf("enable WAL mode: %w", err)
 	}
 
-	// Set busy timeout to 5 seconds (retry instead of failing immediately)
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	// Set busy timeout to 30 seconds (retry instead of failing immediately)
+	if _, err := db.Exec("PRAGMA busy_timeout=30000"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
@@ -93,7 +100,7 @@ func OpenCache(libraryBase string) (*Cache, error) {
 	// Create cache with write queue
 	cache := &Cache{
 		db:        db,
-		writeChan: make(chan cacheWriteRequest, 1000), // Buffer for 1000 pending writes
+		writeChan: make(chan cacheWriteRequest, 10000), // Buffer for 10000 pending writes
 	}
 
 	// Start single writer goroutine to serialize all writes
@@ -108,7 +115,13 @@ func (c *Cache) writerLoop() {
 	defer c.writerDone.Done()
 
 	for req := range c.writeChan {
-		c.writeToDatabase(req.mf, req.modTime)
+		if req.isAlbumSuggestion {
+			// Handle album suggestion write
+			c.writeAlbumSuggestion(req.folderPath, req.sampleFiles, req.suggestion)
+		} else {
+			// Handle file metadata write
+			c.writeToDatabase(req.mf, req.modTime, req.oldPath)
+		}
 	}
 }
 
@@ -171,35 +184,89 @@ func (c *Cache) Put(mf *MediaFile, modTime time.Time) error {
 }
 
 // writeToDatabase performs the actual database write (called by writer goroutine)
-func (c *Cache) writeToDatabase(mf *MediaFile, modTime time.Time) {
+func (c *Cache) writeToDatabase(mf *MediaFile, modTime time.Time, oldPath string) {
 	var dateTakenUnix sql.NullInt64
 	if mf.DateTaken != nil {
 		dateTakenUnix.Valid = true
 		dateTakenUnix.Int64 = mf.DateTaken.Unix()
 	}
 
-	_, err := c.db.Exec(`
-		INSERT OR REPLACE INTO files
-		(path, size, mod_time, hash, date_taken, camera_make, camera_model,
-		 artist, album, title, width, height, processed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, mf.Path, mf.Size, modTime.Unix(), mf.Hash, dateTakenUnix,
-		mf.CameraMake, mf.CameraModel, mf.Artist, mf.Album, mf.Title,
-		mf.Width, mf.Height, time.Now().Unix())
+	// Use a transaction for atomic delete+insert (only when updating path)
+	if oldPath != "" && oldPath != mf.Path {
+		tx, err := c.db.Begin()
+		if err != nil {
+			fmt.Printf("Warning: cache transaction failed for %s: %v\n", mf.Path, err)
+			return
+		}
+		defer tx.Rollback()
 
-	if err != nil {
-		// Log error but don't crash - cache is best-effort
-		fmt.Printf("Warning: cache write failed for %s: %v\n", mf.Path, err)
+		// Delete old path
+		_, err = tx.Exec("DELETE FROM files WHERE path = ?", oldPath)
+		if err != nil {
+			fmt.Printf("Warning: cache delete failed for %s: %v\n", oldPath, err)
+			return
+		}
+
+		// Insert new path
+		_, err = tx.Exec(`
+			INSERT OR REPLACE INTO files
+			(path, size, mod_time, hash, date_taken, camera_make, camera_model,
+			 artist, album, title, width, height, processed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, mf.Path, mf.Size, modTime.Unix(), mf.Hash, dateTakenUnix,
+			mf.CameraMake, mf.CameraModel, mf.Artist, mf.Album, mf.Title,
+			mf.Width, mf.Height, time.Now().Unix())
+
+		if err != nil {
+			fmt.Printf("Warning: cache write failed for %s: %v\n", mf.Path, err)
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			fmt.Printf("Warning: cache commit failed for %s: %v\n", mf.Path, err)
+		}
+	} else {
+		// Simple insert/update (no path change)
+		_, err := c.db.Exec(`
+			INSERT OR REPLACE INTO files
+			(path, size, mod_time, hash, date_taken, camera_make, camera_model,
+			 artist, album, title, width, height, processed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, mf.Path, mf.Size, modTime.Unix(), mf.Hash, dateTakenUnix,
+			mf.CameraMake, mf.CameraModel, mf.Artist, mf.Album, mf.Title,
+			mf.Width, mf.Height, time.Now().Unix())
+
+		if err != nil {
+			fmt.Printf("Warning: cache write failed for %s: %v\n", mf.Path, err)
+		}
 	}
 }
 
 // UpdatePath updates cache entry when a file is moved (for duplicate detection)
 func (c *Cache) UpdatePath(oldPath string, mf *MediaFile, modTime time.Time) {
-	// Delete old cache entry
-	c.db.Exec("DELETE FROM files WHERE path = ?", oldPath)
+	// Queue both delete and insert (async, single writer will handle atomically)
+	select {
+	case c.writeChan <- cacheWriteRequest{mf: mf, modTime: modTime, oldPath: oldPath}:
+		// Queued successfully
+	default:
+		// Channel full, skip this update
+	}
+}
 
-	// Queue write for new path (async)
-	c.Put(mf, modTime)
+// writeAlbumSuggestion performs album suggestion database write (called by writer goroutine)
+func (c *Cache) writeAlbumSuggestion(folderPath string, sampleFiles []string, suggestion string) {
+	samplesJSON, _ := json.Marshal(sampleFiles)
+
+	_, err := c.db.Exec(`
+		INSERT OR REPLACE INTO album_suggestions
+		(folder_path, sample_files, suggestion, created_at)
+		VALUES (?, ?, ?, ?)
+	`, folderPath, string(samplesJSON), suggestion, time.Now().Unix())
+
+	if err != nil {
+		// Log error but don't crash - cache is best-effort
+		fmt.Printf("Warning: album suggestion cache write failed for %s: %v\n", folderPath, err)
+	}
 }
 
 // GetStats returns cache statistics
@@ -262,7 +329,8 @@ func (c *Cache) PruneDeleted(validPaths map[string]bool) (int64, error) {
 
 // AlbumSuggestionCache stores Ollama suggestions
 type AlbumSuggestionCache struct {
-	db *sql.DB
+	db    *sql.DB
+	cache *Cache // Reference to main cache for write queue access
 }
 
 // OpenAlbumSuggestionCache opens the album suggestion cache
@@ -281,7 +349,7 @@ func OpenAlbumSuggestionCache(cache *Cache) (*AlbumSuggestionCache, error) {
 		return nil, fmt.Errorf("create album suggestion schema: %w", err)
 	}
 
-	return &AlbumSuggestionCache{db: cache.db}, nil
+	return &AlbumSuggestionCache{db: cache.db, cache: cache}, nil
 }
 
 // Get retrieves cached album suggestion
@@ -311,15 +379,19 @@ func (a *AlbumSuggestionCache) Get(folderPath string, sampleFiles []string) (str
 	return suggestion, true
 }
 
-// Put stores album suggestion
+// Put stores album suggestion (queued through write channel)
 func (a *AlbumSuggestionCache) Put(folderPath string, sampleFiles []string, suggestion string) error {
-	samplesJSON, _ := json.Marshal(sampleFiles)
-
-	_, err := a.db.Exec(`
-		INSERT OR REPLACE INTO album_suggestions
-		(folder_path, sample_files, suggestion, created_at)
-		VALUES (?, ?, ?, ?)
-	`, folderPath, string(samplesJSON), suggestion, time.Now().Unix())
-
-	return err
+	// Queue write through main cache's write channel for serialized access
+	select {
+	case a.cache.writeChan <- cacheWriteRequest{
+		isAlbumSuggestion: true,
+		folderPath:        folderPath,
+		sampleFiles:       sampleFiles,
+		suggestion:        suggestion,
+	}:
+		return nil
+	default:
+		// Channel full, skip this write (better than blocking)
+		return fmt.Errorf("cache write queue full")
+	}
 }

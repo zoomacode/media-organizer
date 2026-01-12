@@ -32,6 +32,7 @@ type MediaFile struct {
 	Title        string
 	Width        int
 	Height       int
+	IsNew        bool // True if not in cache (needs processing)
 }
 
 // Album represents a collection of media files

@@ -135,7 +135,40 @@ func OrganizeIntoAlbums(files []*MediaFile, config *Config, progressChan chan<- 
 	musicAlbums := organizeMusicFiles(files, config)
 	albums = append(albums, musicAlbums...)
 
+	// Filter albums to only include those with new files
+	albums = filterAlbumsWithNewFiles(albums)
+
 	return albums, nil
+}
+
+// filterAlbumsWithNewFiles returns only albums that contain new files
+func filterAlbumsWithNewFiles(albums []*Album) []*Album {
+	var filtered []*Album
+	for _, album := range albums {
+		hasNewFiles := false
+		var newFiles []*MediaFile
+		for _, file := range album.Files {
+			// Check if file is new OR if it needs to be moved (not already at destination)
+			destPath := filepath.Join(album.Destination, filepath.Base(file.Path))
+			if file.IsNew || file.Path != destPath {
+				hasNewFiles = true
+				newFiles = append(newFiles, file)
+			}
+		}
+		if hasNewFiles {
+			// Create a copy of the album with only new files
+			filteredAlbum := &Album{
+				Name:        album.Name,
+				Destination: album.Destination,
+				Files:       newFiles,
+				SourceDirs:  album.SourceDirs,
+				Date:        album.Date,
+				Type:        album.Type,
+			}
+			filtered = append(filtered, filteredAlbum)
+		}
+	}
+	return filtered
 }
 
 // fallbackAlbumName creates a fallback album name from directory

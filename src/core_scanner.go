@@ -177,6 +177,7 @@ func ProcessMetadata(files []*MediaFile, workers int, progressChan chan<- ScanPr
 							mf.Title = cf.Title
 							mf.Width = cf.Width
 							mf.Height = cf.Height
+							mf.IsNew = false // File was in cache
 							cached = true
 							mu.Lock()
 							cacheHits++
@@ -187,6 +188,7 @@ func ProcessMetadata(files []*MediaFile, workers int, progressChan chan<- ScanPr
 
 				// Extract if not cached
 				if !cached {
+					mf.IsNew = true // New file, not in cache
 					extractMetadata(mf)
 
 					// Store in cache (queued asynchronously)
