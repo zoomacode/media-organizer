@@ -2,6 +2,26 @@
 
 Intelligent media library organizer that uses AI (Ollama) to suggest album names and organizes photos, videos, and music into a structured library.
 
+## Screenshots
+
+<p align="center">
+  <img src="static/metadata.png" alt="Metadata Extraction" width="800"/>
+  <br/>
+  <em>Metadata extraction with real-time progress and cache statistics</em>
+</p>
+
+<p align="center">
+  <img src="static/hashing.png" alt="Hash Calculation" width="800"/>
+  <br/>
+  <em>Duplicate detection via fast parallel hash calculation</em>
+</p>
+
+<p align="center">
+  <img src="static/result.png" alt="Organization Plan" width="800"/>
+  <br/>
+  <em>Review the organization plan before applying changes</em>
+</p>
+
 ## Quick Start
 
 ```bash
