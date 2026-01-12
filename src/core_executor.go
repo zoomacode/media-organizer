@@ -145,7 +145,7 @@ func moveFile(src, dst string) error {
 	return nil
 }
 
-// copyFile copies a file preserving permissions
+// copyFile copies a file preserving permissions and timestamps
 func copyFile(src, dst string) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
@@ -168,7 +168,16 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	return dstFile.Sync()
+	if err := dstFile.Sync(); err != nil {
+		return err
+	}
+
+	// Preserve modification time (critical for cache lookups!)
+	if err := os.Chtimes(dst, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
+		return fmt.Errorf("preserve timestamps: %w", err)
+	}
+
+	return nil
 }
 
 // ensureUniqueFilename adds a counter if file exists
